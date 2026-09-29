@@ -6,6 +6,10 @@
 <title>QR 盤點系統</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html5-qrcode/2.3.8/html5-qrcode.min.js"></script>
+<!-- Firebase（雲端資料庫，讓所有裝置共用同一份盤點資料） -->
+<script src="https://www.gstatic.com/firebasejs/12.19.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/12.19.0/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/12.19.0/firebase-firestore-compat.js"></script>
 <style>
   :root{
     --ink:#0f1b2d; --ink-2:#1c2b40;
@@ -25,9 +29,13 @@
   header .logo::before,header .logo::after{content:"";position:absolute;background:var(--primary)}
   header .logo::before{width:8px;height:8px;top:5px;left:5px;box-shadow:12px 0 0 var(--primary),0 12px 0 var(--primary)}
   header h1{font-size:16px;margin:0;font-weight:700;letter-spacing:.3px}
-  header .sub{font-size:11px;color:#9fb3c8;margin-top:1px}
+  header .sub{font-size:11px;color:#9fb3c8;margin-top:1px;display:flex;align-items:center;gap:6px}
+  header .sub .dot{width:7px;height:7px;border-radius:50%;background:#64748b;flex:0 0 auto}
+  header .sub .dot.on{background:var(--matched)}
+  header .sub .dot.off{background:var(--over)}
   header .prog{margin-left:auto;text-align:right;font-family:var(--mono);font-size:12px;color:#9fb3c8}
   header .prog b{color:#fff;font-size:15px}
+  header .logout{background:none;border:0;color:#64839f;font-size:11px;cursor:pointer;padding:2px 0;text-decoration:underline}
 
   main{max-width:720px;margin:0 auto;padding:16px}
   .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px;margin-bottom:14px}
@@ -118,6 +126,14 @@
   details summary{cursor:pointer;font-size:13px;color:var(--primary);font-weight:600}
   code.k{font-family:var(--mono);background:#eef1f6;padding:1px 5px;border-radius:4px;font-size:12px}
 
+  /* 通關碼 / 登入 遮罩 */
+  .authGate{position:fixed;inset:0;background:var(--paper);z-index:200;display:none;align-items:center;justify-content:center;padding:20px}
+  .authGate.show{display:flex}
+  .authBox{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:28px 24px;max-width:320px;width:100%;text-align:center}
+  .authBox h2{margin:4px 0 4px;font-size:17px}
+  .authBox .muted{margin-bottom:16px}
+  .authBox .err{color:var(--over);font-size:13px;margin-top:10px;min-height:18px;font-weight:600}
+
   @media print{
     header,nav.tabbar,.noprint{display:none!important}
     body{background:#fff;padding:0}
@@ -131,11 +147,27 @@
 </head>
 <body>
 
+<!-- 通關碼登入遮罩：驗證成功前蓋住整個畫面 -->
+<div class="authGate show" id="authGate">
+  <div class="authBox">
+    <div class="logo" style="width:36px;height:36px;border:2px solid var(--primary);border-radius:8px;margin:0 auto 12px;position:relative">
+      <div style="position:absolute;width:9px;height:9px;top:6px;left:6px;background:var(--primary);box-shadow:13px 0 0 var(--primary),0 13px 0 var(--primary)"></div>
+    </div>
+    <h2>QR 盤點系統</h2>
+    <p class="muted">請輸入團隊通關碼以繼續，資料將與所有裝置同步</p>
+    <label class="field" style="text-align:left"><span>通關碼</span>
+      <input type="password" id="authPin" placeholder="輸入通關碼" autocomplete="off" inputmode="text">
+    </label>
+    <button class="btn primary" style="width:100%" onclick="doLogin()">進入盤點系統</button>
+    <div class="err" id="authErr"></div>
+  </div>
+</div>
+
 <header>
   <div class="logo"></div>
   <div>
     <h1>QR 盤點系統</h1>
-    <div class="sub">掃描即記錄・自動比對帳差</div>
+    <div class="sub"><span class="dot" id="netDot"></span><span id="netText">連線中…</span> ・ <button class="logout" onclick="doLogout()">登出</button></div>
   </div>
   <div class="prog"><b id="progCounted">0</b>/<span id="progTotal">0</span><br>已盤品項</div>
 </header>
@@ -164,7 +196,7 @@
     </div>
 
     <div class="card">
-      <h2><span class="eyebrow">LIVE</span> 本次盤點紀錄</h2>
+      <h2><span class="eyebrow">LIVE</span> 本次盤點紀錄 <span class="muted" style="font-weight:400">・全員同步</span></h2>
       <div class="tablewrap">
         <table id="countTable"></table>
       </div>
@@ -283,25 +315,115 @@
 <div class="toast" id="toast"></div>
 
 <script>
-/* ---------- 儲存層:優先 localStorage,失敗則用記憶體(在沙箱/隱私模式也能跑) ---------- */
-const Store = (()=>{
-  let mem={};
-  let ok=true;
-  try{ const k='__t'; localStorage.setItem(k,'1'); localStorage.removeItem(k);}catch(e){ok=false;}
-  return {
-    get(k,d){ try{ if(ok){const v=localStorage.getItem(k);return v==null?d:JSON.parse(v);} }catch(e){}
-      return (k in mem)?mem[k]:d; },
-    set(k,v){ try{ if(ok){localStorage.setItem(k,JSON.stringify(v));return;} }catch(e){}
-      mem[k]=v; }
-  };
-})();
+/* =====================================================================
+   雲端同步設定
+   1. 到 https://console.firebase.google.com 建立一個專案（免費 Spark 方案即可）
+   2. 專案設定 → 新增「網頁應用程式」，把產生的 firebaseConfig 貼到下面 FIREBASE_CONFIG
+   3. 開啟 Firestore Database（正式模式），並套用本檔案附的安全規則（見交付說明）
+   4. 開啟 Authentication → Sign-in method → Email/Password
+   5. Authentication → Users → Add user，Email 填下面的 SHARED_LOGIN_EMAIL，
+      密碼就是團隊要用的「通關碼」（至少 6 碼）
+   ===================================================================== */
+const FIREBASE_CONFIG = {
+  apiKey: "AIzaSyARQXIs37N1TggYNilOgCsNo0VLlxfa6Vg",
+  authDomain: "inventory-check-32690.firebaseapp.com",
+  projectId: "inventory-check-32690",
+  storageBucket: "inventory-check-32690.firebasestorage.app",
+  messagingSenderId: "671114897161",
+  appId: "1:671114897161:web:f4b3ead035b15a2d97d5d8",
+  appId: "YOUR_APP_ID"
+};
+// 共用登入帳號的識別信箱，不需要是真的信箱，只要跟 Firebase Auth 裡建立的使用者一致即可
+const SHARED_LOGIN_EMAIL = "inventory-test@daikso.com";
 
-let items = Store.get('qr_items', []);      // [{code,name,expected,unit,loc,cat}]
-let counts = Store.get('qr_counts', {});     // {code: qty}
-let unknown = Store.get('qr_unknown', {});   // {code: qty}
+firebase.initializeApp(FIREBASE_CONFIG);
+const auth = firebase.auth();
+const db = firebase.firestore();
+try{ db.enablePersistence({synchronizeTabs:true}).catch(()=>{}); }catch(e){}
+
+const itemsCol = db.collection('items');
+const countsCol = db.collection('counts');
+const unknownCol = db.collection('unknown');
+
+function docId(code){
+  let id = encodeURIComponent(String(code||''));
+  if(!id || id==='.' || id==='..') id = 'c_'+id.length;
+  return id;
+}
+
+/* ---------- 狀態(由 Firestore 即時監聽維持) ---------- */
+let items = [];          // [{code,name,expected,unit,loc,cat}]
+let itemsByCode = {};    // code -> item
+let counts = {};         // {code: qty}
+let unknown = {};        // {code: qty}
 let reportFilter = 'all';
+let unsubItems=null, unsubCounts=null, unsubUnknown=null;
 
-function save(){ Store.set('qr_items',items); Store.set('qr_counts',counts); Store.set('qr_unknown',unknown); }
+function findItem(code){ return itemsByCode[code]; }
+
+function startListeners(){
+  if(unsubItems) return; // 避免重複訂閱
+  unsubItems = itemsCol.orderBy('code').onSnapshot(snap=>{
+    items=[]; itemsByCode={};
+    snap.forEach(doc=>{ const d=doc.data(); items.push(d); itemsByCode[d.code]=d; });
+    renderItems(); renderLabels(); renderCountList(); renderReport(); updateProgress();
+  }, err=>{ console.error(err); toast('讀取品項失敗:'+err.message); });
+
+  unsubCounts = countsCol.onSnapshot(snap=>{
+    counts={};
+    snap.forEach(doc=>{ counts[decodeURIComponent(doc.id)] = doc.data().qty||0; });
+    renderCountList(); renderReport(); updateProgress();
+  }, err=>{ console.error(err); toast('讀取盤點資料失敗:'+err.message); });
+
+  unsubUnknown = unknownCol.onSnapshot(snap=>{
+    unknown={};
+    snap.forEach(doc=>{ unknown[decodeURIComponent(doc.id)] = doc.data().qty||0; });
+    renderCountList(); renderReport();
+  }, err=>{ console.error(err); });
+}
+function stopListeners(){
+  if(unsubItems){unsubItems();unsubItems=null;}
+  if(unsubCounts){unsubCounts();unsubCounts=null;}
+  if(unsubUnknown){unsubUnknown();unsubUnknown=null;}
+  items=[]; itemsByCode={}; counts={}; unknown={};
+  renderItems(); renderLabels(); renderCountList(); renderReport(); updateProgress();
+}
+
+/* ---------- 通關碼登入 ---------- */
+function doLogin(){
+  const pin=document.getElementById('authPin').value;
+  const errEl=document.getElementById('authErr');
+  errEl.textContent='';
+  if(!pin){ errEl.textContent='請輸入通關碼'; return; }
+  auth.signInWithEmailAndPassword(SHARED_LOGIN_EMAIL, pin).catch(err=>{
+    if(err.code==='auth/wrong-password'||err.code==='auth/invalid-credential'||err.code==='auth/invalid-login-credentials') errEl.textContent='通關碼錯誤';
+    else if(err.code==='auth/too-many-requests') errEl.textContent='嘗試次數過多,請稍後再試';
+    else if(err.code==='auth/network-request-failed') errEl.textContent='網路連線失敗,請檢查網路';
+    else errEl.textContent='登入失敗:'+err.message;
+  });
+}
+function doLogout(){ auth.signOut(); }
+
+auth.onAuthStateChanged(user=>{
+  const gate=document.getElementById('authGate');
+  if(user){
+    gate.classList.remove('show');
+    document.getElementById('authPin').value='';
+    startListeners();
+  }else{
+    stopListeners();
+    gate.classList.add('show');
+  }
+});
+
+/* ---------- 連線狀態指示 ---------- */
+function updateNetStatus(){
+  const dot=document.getElementById('netDot'), txt=document.getElementById('netText');
+  if(navigator.onLine){ dot.className='dot on'; txt.textContent='已連線・即時同步'; }
+  else{ dot.className='dot off'; txt.textContent='離線中(將於恢復連線後自動同步)'; }
+}
+window.addEventListener('online',updateNetStatus);
+window.addEventListener('offline',updateNetStatus);
 
 /* ---------- 分頁 ---------- */
 function switchTab(v){
@@ -337,12 +459,11 @@ function beep(good=true){
   }catch(e){}
 }
 
-/* ---------- 掃描核心 ---------- */
+/* ---------- 掃描核心(寫入 Firestore,畫面由即時監聽更新) ---------- */
 function bumpQty(d){
   const el=document.getElementById('scanQty');
   el.value=Math.max(1,(parseInt(el.value)||1)+d);
 }
-function findItem(code){ return items.find(i=>i.code===code); }
 
 function handleScan(raw){
   const code=(raw||'').trim();
@@ -353,23 +474,28 @@ function handleScan(raw){
   const hit=document.getElementById('lasthit');
   bar.classList.remove('flash','flash-err');
 
+  const col = it ? countsCol : unknownCol;
+  col.doc(docId(code)).set({
+    qty: firebase.firestore.FieldValue.increment(qty),
+    updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+  }, {merge:true}).catch(err=>toast('寫入失敗:'+err.message));
+
   if(it){
-    counts[code]=(counts[code]||0)+qty;
+    const shown=(counts[code]||0)+qty;
     hit.classList.remove('empty');
     hit.innerHTML=`<div class="code">${esc(code)}</div>
       <div class="name">${esc(it.name||'(未命名)')}</div>
-      <div class="qty">本次 +${qty}　累計 ${counts[code]} ${esc(it.unit||'')}　帳面 ${it.expected||0}</div>`;
+      <div class="qty">本次 +${qty}　累計 ${shown} ${esc(it.unit||'')}　帳面 ${it.expected||0}</div>`;
     void bar.offsetWidth; bar.classList.add('flash'); beep(true);
   }else{
-    unknown[code]=(unknown[code]||0)+qty;
+    const shown=(unknown[code]||0)+qty;
     hit.classList.remove('empty');
     hit.innerHTML=`<div class="code">${esc(code)}</div>
       <div class="name">⚠️ 未知條碼</div>
-      <div class="qty">已記錄 ${unknown[code]} 次,可稍後在報表補建品項</div>`;
+      <div class="qty">已記錄 ${shown} 次,可稍後在報表補建品項</div>`;
     void bar.offsetWidth; bar.classList.add('flash-err'); beep(false);
   }
   setTimeout(()=>bar.classList.remove('flash','flash-err'),200);
-  save(); renderCountList(); updateProgress();
 }
 
 /* 本次盤點紀錄清單 */
@@ -391,10 +517,14 @@ function renderCountList(){
     </tr>`).join('');
 }
 function adjust(code,known,d){
-  const store=known?counts:unknown;
-  store[code]=Math.max(0,(store[code]||0)+d);
-  if(store[code]===0) delete store[code];
-  save(); renderCountList(); updateProgress();
+  const col = known?countsCol:unknownCol;
+  const ref = col.doc(docId(code));
+  db.runTransaction(async tx=>{
+    const snap=await tx.get(ref);
+    const cur=snap.exists?(snap.data().qty||0):0;
+    const next=Math.max(0,cur+d);
+    if(next<=0) tx.delete(ref); else tx.update(ref,{qty:next});
+  }).catch(err=>toast('更新失敗:'+err.message));
 }
 
 function updateProgress(){
@@ -427,13 +557,15 @@ function addItem(){
   const code=v('fCode').trim();
   if(!code){ toast('請輸入條碼 / 品號'); return; }
   if(findItem(code)){ toast('此條碼已存在'); return; }
-  items.push({code,name:v('fName').trim(),expected:num('fExpected'),unit:v('fUnit').trim(),loc:v('fLoc').trim(),cat:v('fCat').trim()});
-  ['fCode','fName','fExpected','fUnit','fLoc','fCat'].forEach(id=>document.getElementById(id).value='');
-  document.getElementById('fCode').focus();
-  save(); renderItems(); updateProgress(); toast('已加入品項');
+  const data={code,name:v('fName').trim(),expected:num('fExpected'),unit:v('fUnit').trim(),loc:v('fLoc').trim(),cat:v('fCat').trim()};
+  itemsCol.doc(docId(code)).set(data).then(()=>{
+    ['fCode','fName','fExpected','fUnit','fLoc','fCat'].forEach(id=>document.getElementById(id).value='');
+    document.getElementById('fCode').focus();
+    toast('已加入品項');
+  }).catch(err=>toast('新增失敗:'+err.message));
 }
 function delItem(code){
-  items=items.filter(i=>i.code!==code); save(); renderItems(); updateProgress();
+  itemsCol.doc(docId(code)).delete().catch(err=>toast('刪除失敗:'+err.message));
 }
 function renderItems(){
   const tb=document.getElementById('itemTable');
@@ -450,7 +582,22 @@ function renderItems(){
       <td class="num"><button class="btn sm danger ghost" onclick="delItem('${jsq(i.code)}')">刪</button></td>
     </tr>`).join('');
 }
-function clearItems(){ if(confirm('確定清空所有品項?(盤點紀錄不受影響)')){ items=[]; save(); renderItems(); updateProgress(); } }
+async function clearItems(){
+  if(!confirm('確定清空所有品項?(盤點紀錄不受影響)')) return;
+  try{
+    const snap=await itemsCol.get();
+    await batchDeleteRefs(snap.docs.map(d=>d.ref));
+    toast('已清空品項');
+  }catch(err){ toast('清空失敗:'+err.message); }
+}
+async function batchDeleteRefs(refs){
+  const chunk=450;
+  for(let i=0;i<refs.length;i+=chunk){
+    const batch=db.batch();
+    refs.slice(i,i+chunk).forEach(r=>batch.delete(r));
+    await batch.commit();
+  }
+}
 
 /* ---------- CSV ---------- */
 function parseCSV(text){
@@ -467,26 +614,31 @@ function parseCSV(text){
 function importCSV(ev){
   const file=ev.target.files[0]; if(!file)return;
   const rd=new FileReader();
-  rd.onload=()=>{
+  rd.onload=async ()=>{
     let rows=parseCSV(rd.result);
-    // 若第一列看起來像標題就跳過
     if(rows.length && /條碼|品號|code|品名/i.test(rows[0].join(','))) rows=rows.slice(1);
-    let added=0;
+    const seen=new Set(); const toAdd=[];
     rows.forEach(r=>{
-      const code=(r[0]||'').trim(); if(!code)return;
-      if(findItem(code))return;
-      items.push({code,name:(r[1]||'').trim(),expected:parseInt(r[2])||0,unit:(r[3]||'').trim(),loc:(r[4]||'').trim(),cat:(r[5]||'').trim()});
-      added++;
+      const code=(r[0]||'').trim(); if(!code||findItem(code)||seen.has(code))return;
+      seen.add(code);
+      toAdd.push({code,name:(r[1]||'').trim(),expected:parseInt(r[2])||0,unit:(r[3]||'').trim(),loc:(r[4]||'').trim(),cat:(r[5]||'').trim()});
     });
-    save(); renderItems(); updateProgress();
-    toast(`匯入完成,新增 ${added} 項`);
+    try{
+      const chunk=450;
+      for(let i=0;i<toAdd.length;i+=chunk){
+        const batch=db.batch();
+        toAdd.slice(i,i+chunk).forEach(d=>batch.set(itemsCol.doc(docId(d.code)),d));
+        await batch.commit();
+      }
+      toast(`匯入完成,新增 ${toAdd.length} 項`);
+    }catch(err){ toast('匯入失敗:'+err.message); }
     ev.target.value='';
   };
   rd.readAsText(file,'utf-8');
 }
 function csvCell(s){ s=(s==null?'':''+s); return /[",\n]/.test(s)?'"'+s.replace(/"/g,'""')+'"':s; }
 function download(name,content){
-  const blob=new Blob(['\ufeff'+content],{type:'text/csv;charset=utf-8'});
+  const blob=new Blob(['﻿'+content],{type:'text/csv;charset=utf-8'});
   const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=name; a.click();
   setTimeout(()=>URL.revokeObjectURL(a.href),1000);
 }
@@ -583,25 +735,30 @@ function renderReport(){
         <td class="num"><button class="btn sm" onclick="promoteUnknown('${jsq(k)}')">建為品項</button></td></tr>`).join('');
   }else uc.style.display='none';
 }
-function promoteUnknown(code){
+async function promoteUnknown(code){
   const name=prompt('為此條碼命名(品名):','');
   if(name===null)return;
-  items.push({code,name:name.trim(),expected:0,unit:'',loc:'',cat:''});
-  counts[code]=(counts[code]||0)+(unknown[code]||0);
-  delete unknown[code];
-  save(); renderItems(); renderReport(); renderCountList(); updateProgress();
-  toast('已建為品項');
+  try{
+    const qty=unknown[code]||0;
+    await itemsCol.doc(docId(code)).set({code,name:name.trim(),expected:0,unit:'',loc:'',cat:''});
+    await countsCol.doc(docId(code)).set({qty:firebase.firestore.FieldValue.increment(qty)},{merge:true});
+    await unknownCol.doc(docId(code)).delete();
+    toast('已建為品項');
+  }catch(err){ toast('操作失敗:'+err.message); }
 }
-function resetCounts(){
-  if(confirm('確定重設本次盤點結果?品項清單會保留。')){
-    counts={}; unknown={}; save(); renderCountList(); renderReport(); updateProgress();
+async function resetCounts(){
+  if(!confirm('確定重設本次盤點結果?品項清單會保留。')) return;
+  try{
+    const [cSnap,uSnap]=await Promise.all([countsCol.get(),unknownCol.get()]);
+    await batchDeleteRefs([...cSnap.docs.map(d=>d.ref),...uSnap.docs.map(d=>d.ref)]);
     document.getElementById('lasthit').className='lasthit empty';
     document.getElementById('lasthit').innerHTML='<div class="name">準備掃描…</div>';
-  }
+    toast('已重設盤點結果');
+  }catch(err){ toast('重設失敗:'+err.message); }
 }
 
 /* ---------- 範例 ---------- */
-function loadSample(){
+async function loadSample(){
   const s=[
     ['A-001','螺絲 M4×10',500,'個','A-3-2','五金'],
     ['A-002','螺帽 M4',480,'個','A-3-2','五金'],
@@ -610,8 +767,17 @@ function loadSample(){
     ['B-102','電工膠帶 黑',60,'捲','B-1-2','耗材'],
     ['C-050','A4 影印紙',40,'包','C-2-1','文具'],
   ];
-  s.forEach(r=>{ if(!findItem(r[0])) items.push({code:r[0],name:r[1],expected:r[2],unit:r[3],loc:r[4],cat:r[5]}); });
-  save(); renderItems(); updateProgress(); toast('已載入 6 筆範例');
+  try{
+    const batch=db.batch();
+    let n=0;
+    s.forEach(r=>{
+      if(findItem(r[0]))return;
+      batch.set(itemsCol.doc(docId(r[0])),{code:r[0],name:r[1],expected:r[2],unit:r[3],loc:r[4],cat:r[5]});
+      n++;
+    });
+    await batch.commit();
+    toast(`已載入 ${n} 筆範例`);
+  }catch(err){ toast('載入失敗:'+err.message); }
 }
 
 /* ---------- 工具 ---------- */
@@ -621,8 +787,9 @@ function esc(s){return (s==null?'':''+s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':
 function jsq(s){return (''+s).replace(/\\/g,'\\\\').replace(/'/g,"\\'");}
 
 /* ---------- 啟動 ---------- */
-renderItems(); renderCountList(); updateProgress();
+updateNetStatus();
 setTimeout(()=>document.getElementById('scanInput').focus(),200);
+setTimeout(()=>document.getElementById('authPin')?.focus(),300);
 </script>
 </body>
 </html>

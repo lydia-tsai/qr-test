@@ -403,6 +403,8 @@ let items = [];          // [{code,name,expected,unit,cat,custodian}]
 let itemsByCode = {};    // code -> item
 let counts = {};         // {code: qty}
 let unknown = {};        // {code: qty}
+let countsMeta = {};     // {code: {updatedAt, lastOperator}} 供報表匯出「盤點時間/盤點人」使用
+let unknownMeta = {};    // {code: {updatedAt, lastOperator}}
 let reportFilter = 'all';
 let unsubItems=null, unsubCounts=null, unsubUnknown=null, unsubScanLogs=null;
 let isAdminUser = false;
@@ -419,14 +421,22 @@ function startListeners(){
   }, err=>{ console.error(err); toast('讀取品項失敗:'+err.message); });
 
   unsubCounts = countsCol.onSnapshot(snap=>{
-    counts={};
-    snap.forEach(doc=>{ counts[decodeURIComponent(doc.id)] = doc.data().qty||0; });
+    counts={}; countsMeta={};
+    snap.forEach(doc=>{
+      const code=decodeURIComponent(doc.id); const d=doc.data();
+      counts[code]=d.qty||0;
+      countsMeta[code]={updatedAt:d.updatedAt||null, lastOperator:d.lastOperator||''};
+    });
     renderCountList(); renderReport(); updateProgress();
   }, err=>{ console.error(err); toast('讀取盤點資料失敗:'+err.message); });
 
   unsubUnknown = unknownCol.onSnapshot(snap=>{
-    unknown={};
-    snap.forEach(doc=>{ unknown[decodeURIComponent(doc.id)] = doc.data().qty||0; });
+    unknown={}; unknownMeta={};
+    snap.forEach(doc=>{
+      const code=decodeURIComponent(doc.id); const d=doc.data();
+      unknown[code]=d.qty||0;
+      unknownMeta[code]={updatedAt:d.updatedAt||null, lastOperator:d.lastOperator||''};
+    });
     renderCountList(); renderReport();
   }, err=>{ console.error(err); });
 }
@@ -435,7 +445,7 @@ function stopListeners(){
   if(unsubCounts){unsubCounts();unsubCounts=null;}
   if(unsubUnknown){unsubUnknown();unsubUnknown=null;}
   stopScanLogListener();
-  items=[]; itemsByCode={}; counts={}; unknown={};
+  items=[]; itemsByCode={}; counts={}; unknown={}; countsMeta={}; unknownMeta={};
   renderItems(); renderLabels(); renderCountList(); renderReport(); updateProgress();
 }
 function startScanLogListener(){
@@ -667,11 +677,17 @@ function renderCountList(){
 function adjust(code,known,d){
   const col = known?countsCol:unknownCol;
   const ref = col.doc(docId(code));
+  const operator=getOperator();
   db.runTransaction(async tx=>{
     const snap=await tx.get(ref);
     const cur=snap.exists?(snap.data().qty||0):0;
     const next=Math.max(0,cur+d);
-    if(next<=0) tx.delete(ref); else tx.update(ref,{qty:next});
+    if(next<=0){ tx.delete(ref); }
+    else{
+      const upd={qty:next, updatedAt:firebase.firestore.FieldValue.serverTimestamp()};
+      if(operator) upd.lastOperator=operator;
+      tx.update(ref,upd);
+    }
   }).catch(err=>toast('更新失敗:'+err.message));
 }
 
@@ -796,13 +812,17 @@ function exportItemsCSV(){
   download('品項清單.csv',head+'\n'+body);
 }
 function exportReportCSV(){
-  const head='財產編號,品名,帳面數量,實盤數量,差異,狀態,單位,財產類別,帳面保管人';
+  const head='財產編號,品名,帳面數量,實盤數量,差異,狀態,單位,財產類別,帳面保管人,盤點時間,盤點人';
   const rows=items.map(i=>{
     const c=counts[i.code]||0, diff=c-(i.expected||0);
     const st=(counts[i.code]==null)?'未盤到':diff===0?'相符':diff<0?'短缺':'溢盤';
-    return [i.code,i.name,i.expected||0,c,diff,st,i.unit,i.cat,i.custodian].map(csvCell).join(',');
+    const meta=countsMeta[i.code]||{};
+    return [i.code,i.name,i.expected||0,c,diff,st,i.unit,i.cat,i.custodian,fmtTs(meta.updatedAt),meta.lastOperator||''].map(csvCell).join(',');
   });
-  const unk=Object.keys(unknown).map(c=>[c,'(未知財產編號)','',unknown[c],unknown[c],'未知','','',''].map(csvCell).join(','));
+  const unk=Object.keys(unknown).map(c=>{
+    const meta=unknownMeta[c]||{};
+    return [c,'(未知財產編號)','',unknown[c],unknown[c],'未知','','','',fmtTs(meta.updatedAt),meta.lastOperator||''].map(csvCell).join(',');
+  });
   download('盤點報表.csv',head+'\n'+rows.concat(unk).join('\n'));
 }
 
@@ -952,6 +972,10 @@ function v(id){return document.getElementById(id).value;}
 function num(id){return parseInt(document.getElementById(id).value)||0;}
 function esc(s){return (s==null?'':''+s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
 function jsq(s){return (''+s).replace(/\\/g,'\\\\').replace(/'/g,"\\'");}
+function fmtTs(ts){
+  if(ts && typeof ts.toDate==='function'){ return ts.toDate().toLocaleString('zh-TW',{hour12:false}); }
+  return '';
+}
 
 /* ---------- 啟動 ---------- */
 updateNetStatus();

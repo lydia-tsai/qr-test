@@ -29,7 +29,7 @@
   header .logo::before,header .logo::after{content:"";position:absolute;background:var(--primary)}
   header .logo::before{width:8px;height:8px;top:5px;left:5px;box-shadow:12px 0 0 var(--primary),0 12px 0 var(--primary)}
   header h1{font-size:16px;margin:0;font-weight:700;letter-spacing:.3px}
-  header .sub{font-size:11px;color:#9fb3c8;margin-top:1px;display:flex;align-items:center;gap:6px}
+  header .sub{font-size:11px;color:#9fb3c8;margin-top:1px;display:flex;align-items:center;gap:6px;flex-wrap:wrap}
   header .sub .dot{width:7px;height:7px;border-radius:50%;background:#64748b;flex:0 0 auto}
   header .sub .dot.on{background:var(--matched)}
   header .sub .dot.off{background:var(--over)}
@@ -69,6 +69,11 @@
   input:focus,select:focus,textarea:focus{outline:2px solid var(--primary);outline-offset:-1px;border-color:var(--primary)}
   .grid2{display:grid;grid-template-columns:1fr 1fr;gap:0 12px}
 
+  /* 盤點人工號 */
+  .opbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+  .opbar .lbl{font-size:12px;color:var(--muted);font-weight:700;white-space:nowrap}
+  .opbar input{flex:1;min-width:140px}
+
   /* SCAN */
   .scanbar{background:var(--ink);border-radius:14px;padding:16px;color:#fff;margin-bottom:14px;transition:background .15s}
   .scanbar.flash{background:var(--matched)}
@@ -84,6 +89,8 @@
   .qtystep{display:flex;align-items:center;gap:0;border:1px solid #26384f;border-radius:9px;overflow:hidden;flex:0 0 auto}
   .qtystep button{background:#0a1420;color:#fff;border:0;width:38px;height:44px;font-size:20px;cursor:pointer}
   .qtystep input{width:52px;text-align:center;border:0;border-radius:0;border-left:1px solid #26384f;border-right:1px solid #26384f}
+  .pendingPanel{margin-top:12px;padding-top:12px;border-top:1px solid #26384f}
+  .pendingPanel .hint{font-size:12px;color:#9fb3c8;align-self:center}
 
   #reader{border-radius:12px;overflow:hidden;margin-top:12px;display:none}
   #reader.on{display:block}
@@ -133,6 +140,8 @@
   .authBox h2{margin:4px 0 4px;font-size:17px}
   .authBox .muted{margin-bottom:16px}
   .authBox .err{color:var(--over);font-size:13px;margin-top:10px;min-height:18px;font-weight:600}
+  .roleToggle{display:flex;gap:8px;margin-bottom:14px}
+  .roleToggle button{flex:1}
 
   @media print{
     header,nav.tabbar,.noprint{display:none!important}
@@ -154,9 +163,14 @@
       <div style="position:absolute;width:9px;height:9px;top:6px;left:6px;background:var(--primary);box-shadow:13px 0 0 var(--primary),0 13px 0 var(--primary)"></div>
     </div>
     <h2>QR 盤點系統</h2>
-    <p class="muted">請輸入團隊通關碼以繼續，資料將與所有裝置同步</p>
+    <p class="muted">請選擇身份並輸入通關碼，資料將與所有裝置同步</p>
+    <div class="roleToggle">
+      <button type="button" class="btn sm primary" id="roleStaffBtn" onclick="setLoginRole('staff')">一般使用者</button>
+      <button type="button" class="btn sm" id="roleAdminBtn" onclick="setLoginRole('admin')">管理員</button>
+    </div>
     <label class="field" style="text-align:left"><span>通關碼</span>
-      <input type="password" id="authPin" placeholder="輸入通關碼" autocomplete="off" inputmode="text">
+      <input type="password" id="authPin" placeholder="輸入通關碼" autocomplete="off" inputmode="text"
+        onkeydown="if(event.key==='Enter'){event.preventDefault();doLogin();}">
     </label>
     <button class="btn primary" style="width:100%" onclick="doLogin()">進入盤點系統</button>
     <div class="err" id="authErr"></div>
@@ -167,7 +181,7 @@
   <div class="logo"></div>
   <div>
     <h1>QR 盤點系統</h1>
-    <div class="sub"><span class="dot" id="netDot"></span><span id="netText">連線中…</span> ・ <button class="logout" onclick="doLogout()">登出</button></div>
+    <div class="sub"><span class="dot" id="netDot"></span><span id="netText">連線中…</span><span id="roleBadge"></span> ・ <button class="logout" onclick="doLogout()">登出</button></div>
   </div>
   <div class="prog"><b id="progCounted">0</b>/<span id="progTotal">0</span><br>已盤品項</div>
 </header>
@@ -175,21 +189,45 @@
 <main>
   <!-- ============ 盤點 ============ -->
   <section class="view active" id="view-scan">
+    <div class="card" style="padding:12px 16px">
+      <div class="opbar">
+        <span class="lbl">盤點人工號 *</span>
+        <input id="operatorInput" placeholder="輸入你的工號" autocomplete="off" oninput="onOperatorInput()">
+      </div>
+      <p class="muted" style="margin:6px 0 0">每筆上傳的盤點紀錄都會附上這組工號，方便日後追蹤是誰盤的。</p>
+    </div>
+
     <div class="scanbar" id="scanbar">
       <div class="lasthit empty" id="lasthit">
         <div class="name">準備掃描…</div>
       </div>
-      <div class="scaninput">
-        <div class="qtystep">
-          <button type="button" onclick="bumpQty(-1)">−</button>
-          <input type="number" id="scanQty" value="1" min="1" inputmode="numeric">
-          <button type="button" onclick="bumpQty(1)">+</button>
+
+      <!-- 待確認面板:掃描到財產編號後顯示,需填數量並按確認鍵才會上傳 -->
+      <div class="pendingPanel" id="pendingPanel" style="display:none">
+        <div class="lasthit" style="min-height:auto">
+          <div class="code" id="pendCode"></div>
+          <div class="name" id="pendName"></div>
         </div>
-        <input type="text" id="scanInput" placeholder="掃描或輸入條碼後按 Enter"
-               autocomplete="off" autocapitalize="off" spellcheck="false"
-               onkeydown="if(event.key==='Enter'){event.preventDefault();handleScan(this.value);this.value=''}">
+        <div class="scaninput">
+          <div class="qtystep">
+            <button type="button" onclick="bumpPendQty(-1)">−</button>
+            <input type="number" id="pendQty" value="1" min="1" inputmode="numeric">
+            <button type="button" onclick="bumpPendQty(1)">+</button>
+          </div>
+          <div class="hint">請確認盤點數量後按確認上傳</div>
+        </div>
+        <div class="row" style="margin-top:12px">
+          <button class="btn primary" style="flex:1" onclick="confirmScan()">✔ 確認上傳</button>
+          <button class="btn ghost" style="color:#cfe9e5;border-color:#26384f" onclick="cancelScan()">取消</button>
+        </div>
       </div>
-      <div class="row" style="margin-top:12px">
+
+      <div class="scaninput" id="scanIdleRow">
+        <input type="text" id="scanInput" placeholder="掃描或輸入財產編號後按 Enter"
+               autocomplete="off" autocapitalize="off" spellcheck="false"
+               onkeydown="if(event.key==='Enter'){event.preventDefault();stageScan(this.value);this.value=''}">
+      </div>
+      <div class="row" style="margin-top:12px" id="camRow">
         <button class="btn sm ghost" style="color:#cfe9e5;border-color:#26384f" onclick="toggleCamera()" id="camBtn">📷 開啟相機掃描</button>
       </div>
       <div id="reader"></div>
@@ -202,7 +240,7 @@
       </div>
       <div id="countEmpty" class="empty">
         <div class="big">📦</div>
-        還沒有紀錄。掃描條碼即可開始盤點。
+        還沒有紀錄。掃描或輸入財產編號即可開始盤點。
       </div>
     </div>
   </section>
@@ -212,12 +250,12 @@
     <div class="card">
       <h2><span class="eyebrow">NEW</span> 新增品項</h2>
       <div class="grid2">
-        <label class="field"><span>條碼 / 品號 *</span><input id="fCode" placeholder="A-001"></label>
+        <label class="field"><span>財產編號 *</span><input id="fCode" placeholder="A-001"></label>
         <label class="field"><span>品名</span><input id="fName" placeholder="螺絲 M4×10"></label>
         <label class="field"><span>帳面數量</span><input id="fExpected" type="number" inputmode="numeric" placeholder="0"></label>
         <label class="field"><span>單位</span><input id="fUnit" placeholder="個 / 箱"></label>
-        <label class="field"><span>儲位</span><input id="fLoc" placeholder="A-3-2"></label>
-        <label class="field"><span>分類</span><input id="fCat" placeholder="五金"></label>
+        <label class="field"><span>財產類別</span><input id="fCat" placeholder="五金"></label>
+        <label class="field"><span>帳面保管人</span><input id="fCustodian" placeholder="王小明"></label>
       </div>
       <div class="row">
         <button class="btn primary" onclick="addItem()">＋ 加入品項</button>
@@ -226,7 +264,7 @@
 
     <div class="card">
       <h2><span class="eyebrow">CSV</span> 批次匯入 / 匯出</h2>
-      <p class="muted" style="margin-top:0">欄位順序:<code class="k">條碼,品名,帳面數量,單位,儲位,分類</code>(第一列標題可留可去)。</p>
+      <p class="muted" style="margin-top:0">欄位順序:<code class="k">財產編號,品名,帳面數量,單位,財產類別,帳面保管人</code>(第一列標題可留可去)。</p>
       <div class="row">
         <button class="btn" onclick="document.getElementById('csvFile').click()">⬆️ 匯入 CSV</button>
         <input type="file" id="csvFile" accept=".csv,text/csv" style="display:none" onchange="importCSV(event)">
@@ -294,8 +332,14 @@
     </div>
 
     <div class="card" id="unknownCard" style="display:none">
-      <h2 style="color:var(--over)">⚠️ 未知條碼(不在品項清單內)</h2>
+      <h2 style="color:var(--over)">⚠️ 未知財產編號(不在品項清單內)</h2>
       <div class="tablewrap"><table id="unknownTable"></table></div>
+    </div>
+
+    <div class="card noprint">
+      <h2><span class="eyebrow">LOG</span> 最近盤點紀錄(稽核)</h2>
+      <div class="tablewrap"><table id="scanLogTable"></table></div>
+      <div id="scanLogEmpty" class="empty" style="padding:16px"><div class="big">🧾</div>尚無掃描紀錄。</div>
     </div>
 
     <div class="card noprint">
@@ -321,8 +365,10 @@
    2. 專案設定 → 新增「網頁應用程式」，把產生的 firebaseConfig 貼到下面 FIREBASE_CONFIG
    3. 開啟 Firestore Database（正式模式），並套用本檔案附的安全規則（見交付說明）
    4. 開啟 Authentication → Sign-in method → Email/Password
-   5. Authentication → Users → Add user，Email 填下面的 SHARED_LOGIN_EMAIL，
-      密碼就是團隊要用的「通關碼」（至少 6 碼）
+   5. Authentication → Users → 建立「兩組」共用帳號：
+      - 一般使用者：Email 填 SHARED_LOGIN_EMAIL，密碼是「一般通關碼」
+      - 管理員：Email 填 ADMIN_LOGIN_EMAIL，密碼是「管理員通關碼」
+      兩組密碼都至少 6 碼，之後想換通關碼回這裡改密碼即可
    ===================================================================== */
 const FIREBASE_CONFIG = {
   apiKey: "AIzaSyARQXIs37N1TggYNilOgCsNo0VLlxfa6Vg",
@@ -333,7 +379,8 @@ const FIREBASE_CONFIG = {
   appId: "1:671114897161:web:f4b3ead035b15a2d97d5d8"
 };
 // 共用登入帳號的識別信箱，不需要是真的信箱，只要跟 Firebase Auth 裡建立的使用者一致即可
-const SHARED_LOGIN_EMAIL = "inventory-test@daikso.com";
+const SHARED_LOGIN_EMAIL = "inventory-test@daikso.com"; // 一般使用者帳號(既有)
+const ADMIN_LOGIN_EMAIL = "admin-test@daikso.com";      // 管理員帳號(新增,需到 Firebase 手動建立,見交付說明)
 
 firebase.initializeApp(FIREBASE_CONFIG);
 const auth = firebase.auth();
@@ -343,6 +390,7 @@ try{ db.enablePersistence({synchronizeTabs:true}).catch(()=>{}); }catch(e){}
 const itemsCol = db.collection('items');
 const countsCol = db.collection('counts');
 const unknownCol = db.collection('unknown');
+const scanLogsCol = db.collection('scanLogs');
 
 function docId(code){
   let id = encodeURIComponent(String(code||''));
@@ -351,12 +399,14 @@ function docId(code){
 }
 
 /* ---------- 狀態(由 Firestore 即時監聽維持) ---------- */
-let items = [];          // [{code,name,expected,unit,loc,cat}]
+let items = [];          // [{code,name,expected,unit,cat,custodian}]
 let itemsByCode = {};    // code -> item
 let counts = {};         // {code: qty}
 let unknown = {};        // {code: qty}
 let reportFilter = 'all';
-let unsubItems=null, unsubCounts=null, unsubUnknown=null;
+let unsubItems=null, unsubCounts=null, unsubUnknown=null, unsubScanLogs=null;
+let isAdminUser = false;
+let loginRole = 'staff';
 
 function findItem(code){ return itemsByCode[code]; }
 
@@ -384,17 +434,35 @@ function stopListeners(){
   if(unsubItems){unsubItems();unsubItems=null;}
   if(unsubCounts){unsubCounts();unsubCounts=null;}
   if(unsubUnknown){unsubUnknown();unsubUnknown=null;}
+  stopScanLogListener();
   items=[]; itemsByCode={}; counts={}; unknown={};
   renderItems(); renderLabels(); renderCountList(); renderReport(); updateProgress();
 }
+function startScanLogListener(){
+  if(unsubScanLogs) return;
+  unsubScanLogs = scanLogsCol.orderBy('ts','desc').limit(50).onSnapshot(snap=>{
+    const rows=[];
+    snap.forEach(doc=>rows.push(doc.data()));
+    renderScanLogs(rows);
+  }, err=>{ console.error(err); });
+}
+function stopScanLogListener(){
+  if(unsubScanLogs){ unsubScanLogs(); unsubScanLogs=null; }
+}
 
-/* ---------- 通關碼登入 ---------- */
+/* ---------- 通關碼登入(區分一般使用者 / 管理員) ---------- */
+function setLoginRole(r){
+  loginRole=r;
+  document.getElementById('roleStaffBtn').classList.toggle('primary', r==='staff');
+  document.getElementById('roleAdminBtn').classList.toggle('primary', r==='admin');
+}
 function doLogin(){
   const pin=document.getElementById('authPin').value;
   const errEl=document.getElementById('authErr');
   errEl.textContent='';
   if(!pin){ errEl.textContent='請輸入通關碼'; return; }
-  auth.signInWithEmailAndPassword(SHARED_LOGIN_EMAIL, pin).catch(err=>{
+  const email = loginRole==='admin' ? ADMIN_LOGIN_EMAIL : SHARED_LOGIN_EMAIL;
+  auth.signInWithEmailAndPassword(email, pin).catch(err=>{
     if(err.code==='auth/wrong-password'||err.code==='auth/invalid-credential'||err.code==='auth/invalid-login-credentials') errEl.textContent='通關碼錯誤';
     else if(err.code==='auth/too-many-requests') errEl.textContent='嘗試次數過多,請稍後再試';
     else if(err.code==='auth/network-request-failed') errEl.textContent='網路連線失敗,請檢查網路';
@@ -406,14 +474,47 @@ function doLogout(){ auth.signOut(); }
 auth.onAuthStateChanged(user=>{
   const gate=document.getElementById('authGate');
   if(user){
+    isAdminUser = (user.email === ADMIN_LOGIN_EMAIL);
     gate.classList.remove('show');
     document.getElementById('authPin').value='';
+    applyRolePermissions();
     startListeners();
   }else{
+    isAdminUser=false;
     stopListeners();
     gate.classList.add('show');
   }
 });
+
+/* ---------- 權限分流:一般使用者只有「盤點」功能 ---------- */
+function applyRolePermissions(){
+  const nav=document.querySelector('nav.tabbar');
+  const badge=document.getElementById('roleBadge');
+  if(isAdminUser){
+    nav.style.display='';
+    badge.textContent='・管理員';
+    startScanLogListener();
+  }else{
+    nav.style.display='none';
+    badge.textContent='・一般使用者';
+    stopScanLogListener();
+    switchTab('scan');
+  }
+}
+
+/* ---------- 盤點人工號 ---------- */
+function onOperatorInput(){
+  try{ sessionStorage.setItem('qr_operator', getOperator()); }catch(e){}
+}
+function restoreOperator(){
+  try{
+    const val=sessionStorage.getItem('qr_operator')||'';
+    document.getElementById('operatorInput').value=val;
+  }catch(e){}
+}
+function getOperator(){
+  return (document.getElementById('operatorInput').value||'').trim();
+}
 
 /* ---------- 連線狀態指示 ---------- */
 function updateNetStatus(){
@@ -426,6 +527,7 @@ window.addEventListener('offline',updateNetStatus);
 
 /* ---------- 分頁 ---------- */
 function switchTab(v){
+  if(pendingScan) cancelScan();
   document.querySelectorAll('.view').forEach(el=>el.classList.remove('active'));
   document.getElementById('view-'+v).classList.add('active');
   document.querySelectorAll('nav.tabbar button').forEach(b=>b.classList.toggle('active',b.dataset.view===v));
@@ -458,17 +560,49 @@ function beep(good=true){
   }catch(e){}
 }
 
-/* ---------- 掃描核心(寫入 Firestore,畫面由即時監聽更新) ---------- */
-function bumpQty(d){
-  const el=document.getElementById('scanQty');
+/* ---------- 掃描核心:掃描/輸入後先「待確認」,填好數量按確認鍵才寫入 Firestore ---------- */
+let pendingScan = null; // {code, item}
+
+function bumpPendQty(d){
+  const el=document.getElementById('pendQty');
   el.value=Math.max(1,(parseInt(el.value)||1)+d);
 }
 
-function handleScan(raw){
+function stageScan(raw){
   const code=(raw||'').trim();
   if(!code) return;
-  const qty=Math.max(1,parseInt(document.getElementById('scanQty').value)||1);
+  if(pendingScan){ toast('請先確認或取消目前這筆,再繼續掃描'); return; }
   const it=findItem(code);
+  pendingScan={code, item:it};
+  document.getElementById('pendCode').textContent=code;
+  document.getElementById('pendName').textContent = it ? (it.name||'(未命名)') : '⚠️ 未知財產編號(不在品項清單內)';
+  document.getElementById('pendQty').value='1';
+  document.getElementById('pendingPanel').style.display='block';
+  document.getElementById('scanIdleRow').style.display='none';
+  document.getElementById('camRow').style.display='none';
+  if(cameraOn && html5qr){ try{ html5qr.pause(true); }catch(e){} }
+  setTimeout(()=>document.getElementById('pendQty').focus(),50);
+}
+
+function cancelScan(){
+  pendingScan=null;
+  document.getElementById('pendingPanel').style.display='none';
+  document.getElementById('scanIdleRow').style.display='flex';
+  document.getElementById('camRow').style.display='flex';
+  if(cameraOn && html5qr){ try{ html5qr.resume(); }catch(e){} }
+  setTimeout(()=>document.getElementById('scanInput').focus(),50);
+}
+
+function confirmScan(){
+  if(!pendingScan) return;
+  const operator=getOperator();
+  if(!operator){
+    toast('請先輸入盤點人工號');
+    document.getElementById('operatorInput').focus();
+    return;
+  }
+  const qty=Math.max(1,parseInt(document.getElementById('pendQty').value)||1);
+  const code=pendingScan.code, it=pendingScan.item;
   const bar=document.getElementById('scanbar');
   const hit=document.getElementById('lasthit');
   bar.classList.remove('flash','flash-err');
@@ -476,25 +610,40 @@ function handleScan(raw){
   const col = it ? countsCol : unknownCol;
   col.doc(docId(code)).set({
     qty: firebase.firestore.FieldValue.increment(qty),
-    updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+    updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
+    lastOperator: operator
   }, {merge:true}).catch(err=>toast('寫入失敗:'+err.message));
+
+  scanLogsCol.add({
+    code, qty, operator,
+    matched: !!it,
+    name: it ? (it.name||'') : '',
+    ts: firebase.firestore.FieldValue.serverTimestamp()
+  }).catch(err=>console.error(err));
 
   if(it){
     const shown=(counts[code]||0)+qty;
     hit.classList.remove('empty');
     hit.innerHTML=`<div class="code">${esc(code)}</div>
       <div class="name">${esc(it.name||'(未命名)')}</div>
-      <div class="qty">本次 +${qty}　累計 ${shown} ${esc(it.unit||'')}　帳面 ${it.expected||0}</div>`;
+      <div class="qty">本次 +${qty}(${esc(operator)})　累計 ${shown} ${esc(it.unit||'')}　帳面 ${it.expected||0}</div>`;
     void bar.offsetWidth; bar.classList.add('flash'); beep(true);
   }else{
     const shown=(unknown[code]||0)+qty;
     hit.classList.remove('empty');
     hit.innerHTML=`<div class="code">${esc(code)}</div>
-      <div class="name">⚠️ 未知條碼</div>
-      <div class="qty">已記錄 ${shown} 次,可稍後在報表補建品項</div>`;
+      <div class="name">⚠️ 未知財產編號</div>
+      <div class="qty">已記錄 ${shown} 次(${esc(operator)}),可稍後在報表補建品項</div>`;
     void bar.offsetWidth; bar.classList.add('flash-err'); beep(false);
   }
   setTimeout(()=>bar.classList.remove('flash','flash-err'),200);
+
+  pendingScan=null;
+  document.getElementById('pendingPanel').style.display='none';
+  document.getElementById('scanIdleRow').style.display='flex';
+  document.getElementById('camRow').style.display='flex';
+  if(cameraOn && html5qr){ try{ html5qr.resume(); }catch(e){} }
+  setTimeout(()=>document.getElementById('scanInput').focus(),50);
 }
 
 /* 本次盤點紀錄清單 */
@@ -507,7 +656,7 @@ function renderCountList(){
   entries.reverse();
   if(!entries.length){ tb.innerHTML=''; emp.style.display='block'; return; }
   emp.style.display='none';
-  tb.innerHTML=`<tr><th class="code">條碼</th><th>品名</th><th class="num">實盤</th><th></th></tr>`+
+  tb.innerHTML=`<tr><th class="code">財產編號</th><th>品名</th><th class="num">實盤</th><th></th></tr>`+
     entries.map(e=>`<tr>
       <td class="code">${esc(e.code)}</td>
       <td>${esc(e.name||'')}${e.unit?` <span class="muted">${esc(e.unit)}</span>`:''}</td>
@@ -545,7 +694,7 @@ function toggleCamera(){
   html5qr=new Html5Qrcode('reader');
   reader.classList.add('on');
   html5qr.start({facingMode:'environment'},{fps:10,qrbox:{width:220,height:220}},
-    txt=>{ handleScan(txt); },
+    txt=>{ stageScan(txt); },
     ()=>{}
   ).then(()=>{ cameraOn=true; btn.textContent='⏹ 關閉相機'; })
    .catch(err=>{ reader.classList.remove('on'); toast('無法開啟相機:'+err); });
@@ -554,11 +703,11 @@ function toggleCamera(){
 /* ---------- 品項管理 ---------- */
 function addItem(){
   const code=v('fCode').trim();
-  if(!code){ toast('請輸入條碼 / 品號'); return; }
-  if(findItem(code)){ toast('此條碼已存在'); return; }
-  const data={code,name:v('fName').trim(),expected:num('fExpected'),unit:v('fUnit').trim(),loc:v('fLoc').trim(),cat:v('fCat').trim()};
+  if(!code){ toast('請輸入財產編號'); return; }
+  if(findItem(code)){ toast('此財產編號已存在'); return; }
+  const data={code,name:v('fName').trim(),expected:num('fExpected'),unit:v('fUnit').trim(),cat:v('fCat').trim(),custodian:v('fCustodian').trim()};
   itemsCol.doc(docId(code)).set(data).then(()=>{
-    ['fCode','fName','fExpected','fUnit','fLoc','fCat'].forEach(id=>document.getElementById(id).value='');
+    ['fCode','fName','fExpected','fUnit','fCat','fCustodian'].forEach(id=>document.getElementById(id).value='');
     document.getElementById('fCode').focus();
     toast('已加入品項');
   }).catch(err=>toast('新增失敗:'+err.message));
@@ -572,12 +721,12 @@ function renderItems(){
   document.getElementById('itemCount').textContent=items.length?`(${items.length} 項)`:'';
   if(!items.length){ tb.innerHTML=''; emp.style.display='block'; return; }
   emp.style.display='none';
-  tb.innerHTML=`<tr><th class="code">條碼</th><th>品名</th><th class="num">帳面</th><th>儲位</th><th></th></tr>`+
+  tb.innerHTML=`<tr><th class="code">財產編號</th><th>品名</th><th class="num">帳面數量</th><th>單位</th><th></th></tr>`+
     items.map(i=>`<tr>
       <td class="code">${esc(i.code)}</td>
-      <td>${esc(i.name||'')}${i.unit?` <span class="muted">${esc(i.unit)}</span>`:''}</td>
+      <td>${esc(i.name||'')}</td>
       <td class="num">${i.expected||0}</td>
-      <td class="muted">${esc(i.loc||'')}</td>
+      <td class="muted">${esc(i.unit||'')}</td>
       <td class="num"><button class="btn sm danger ghost" onclick="delItem('${jsq(i.code)}')">刪</button></td>
     </tr>`).join('');
 }
@@ -615,12 +764,12 @@ function importCSV(ev){
   const rd=new FileReader();
   rd.onload=async ()=>{
     let rows=parseCSV(rd.result);
-    if(rows.length && /條碼|品號|code|品名/i.test(rows[0].join(','))) rows=rows.slice(1);
+    if(rows.length && /財產編號|條碼|品號|code|品名/i.test(rows[0].join(','))) rows=rows.slice(1);
     const seen=new Set(); const toAdd=[];
     rows.forEach(r=>{
       const code=(r[0]||'').trim(); if(!code||findItem(code)||seen.has(code))return;
       seen.add(code);
-      toAdd.push({code,name:(r[1]||'').trim(),expected:parseInt(r[2])||0,unit:(r[3]||'').trim(),loc:(r[4]||'').trim(),cat:(r[5]||'').trim()});
+      toAdd.push({code,name:(r[1]||'').trim(),expected:parseInt(r[2])||0,unit:(r[3]||'').trim(),cat:(r[4]||'').trim(),custodian:(r[5]||'').trim()});
     });
     try{
       const chunk=450;
@@ -642,18 +791,18 @@ function download(name,content){
   setTimeout(()=>URL.revokeObjectURL(a.href),1000);
 }
 function exportItemsCSV(){
-  const head='條碼,品名,帳面數量,單位,儲位,分類';
-  const body=items.map(i=>[i.code,i.name,i.expected,i.unit,i.loc,i.cat].map(csvCell).join(',')).join('\n');
+  const head='財產編號,品名,帳面數量,單位,財產類別,帳面保管人';
+  const body=items.map(i=>[i.code,i.name,i.expected,i.unit,i.cat,i.custodian].map(csvCell).join(',')).join('\n');
   download('品項清單.csv',head+'\n'+body);
 }
 function exportReportCSV(){
-  const head='條碼,品名,帳面數量,實盤數量,差異,狀態,單位,儲位';
+  const head='財產編號,品名,帳面數量,實盤數量,差異,狀態,單位,財產類別,帳面保管人';
   const rows=items.map(i=>{
     const c=counts[i.code]||0, diff=c-(i.expected||0);
     const st=(counts[i.code]==null)?'未盤到':diff===0?'相符':diff<0?'短缺':'溢盤';
-    return [i.code,i.name,i.expected||0,c,diff,st,i.unit,i.loc].map(csvCell).join(',');
+    return [i.code,i.name,i.expected||0,c,diff,st,i.unit,i.cat,i.custodian].map(csvCell).join(',');
   });
-  const unk=Object.keys(unknown).map(c=>[c,'(未知條碼)','',unknown[c],unknown[c],'未知','',''].map(csvCell).join(','));
+  const unk=Object.keys(unknown).map(c=>[c,'(未知財產編號)','',unknown[c],unknown[c],'未知','','',''].map(csvCell).join(','));
   download('盤點報表.csv',head+'\n'+rows.concat(unk).join('\n'));
 }
 
@@ -712,7 +861,7 @@ function renderReport(){
   else{
     emp.style.display='none';
     const label={ok:'相符',short:'短缺',over:'溢盤',none:'未盤'};
-    tb.innerHTML=`<tr><th class="code">條碼</th><th>品名</th><th class="num">帳面</th><th class="num">實盤</th><th class="num">差異</th><th>狀態</th></tr>`+
+    tb.innerHTML=`<tr><th class="code">財產編號</th><th>品名</th><th class="num">帳面</th><th class="num">實盤</th><th class="num">差異</th><th>狀態</th></tr>`+
       rows.map(r=>`<tr>
         <td class="code">${esc(r.code)}</td>
         <td>${esc(r.name||'')}</td>
@@ -723,23 +872,42 @@ function renderReport(){
       </tr>`).join('');
   }
 
-  // 未知條碼
+  // 未知財產編號
   const unkKeys=Object.keys(unknown).filter(k=>unknown[k]>0);
   const uc=document.getElementById('unknownCard');
   if(unkKeys.length){
     uc.style.display='block';
     document.getElementById('unknownTable').innerHTML=
-      `<tr><th class="code">條碼</th><th class="num">掃描次數</th><th></th></tr>`+
+      `<tr><th class="code">財產編號</th><th class="num">掃描次數</th><th></th></tr>`+
       unkKeys.map(k=>`<tr><td class="code">${esc(k)}</td><td class="num">${unknown[k]}</td>
         <td class="num"><button class="btn sm" onclick="promoteUnknown('${jsq(k)}')">建為品項</button></td></tr>`).join('');
   }else uc.style.display='none';
 }
+function renderScanLogs(rows){
+  const tb=document.getElementById('scanLogTable');
+  const emp=document.getElementById('scanLogEmpty');
+  if(!tb) return;
+  if(!rows.length){ tb.innerHTML=''; if(emp) emp.style.display='block'; return; }
+  if(emp) emp.style.display='none';
+  tb.innerHTML=`<tr><th>時間</th><th class="code">財產編號</th><th>盤點人</th><th class="num">數量</th><th>比對</th></tr>`+
+    rows.map(r=>{
+      const t = r.ts && typeof r.ts.toDate==='function' ? r.ts.toDate() : null;
+      const timeStr = t ? t.toLocaleString('zh-TW',{hour12:false}) : '—';
+      return `<tr>
+        <td class="muted">${esc(timeStr)}</td>
+        <td class="code">${esc(r.code)}</td>
+        <td>${esc(r.operator||'')}</td>
+        <td class="num">${r.qty}</td>
+        <td><span class="pill ${r.matched?'ok':'over'}">${r.matched?'已知品項':'未知財產'}</span></td>
+      </tr>`;
+    }).join('');
+}
 async function promoteUnknown(code){
-  const name=prompt('為此條碼命名(品名):','');
+  const name=prompt('為此財產編號命名(品名):','');
   if(name===null)return;
   try{
     const qty=unknown[code]||0;
-    await itemsCol.doc(docId(code)).set({code,name:name.trim(),expected:0,unit:'',loc:'',cat:''});
+    await itemsCol.doc(docId(code)).set({code,name:name.trim(),expected:0,unit:'',cat:'',custodian:''});
     await countsCol.doc(docId(code)).set({qty:firebase.firestore.FieldValue.increment(qty)},{merge:true});
     await unknownCol.doc(docId(code)).delete();
     toast('已建為品項');
@@ -759,19 +927,19 @@ async function resetCounts(){
 /* ---------- 範例 ---------- */
 async function loadSample(){
   const s=[
-    ['A-001','螺絲 M4×10',500,'個','A-3-2','五金'],
-    ['A-002','螺帽 M4',480,'個','A-3-2','五金'],
-    ['A-003','華司墊片 4mm',300,'個','A-3-3','五金'],
-    ['B-101','束線帶 200mm',120,'包','B-1-1','耗材'],
-    ['B-102','電工膠帶 黑',60,'捲','B-1-2','耗材'],
-    ['C-050','A4 影印紙',40,'包','C-2-1','文具'],
+    ['A-001','螺絲 M4×10',500,'個','五金','王小明'],
+    ['A-002','螺帽 M4',480,'個','五金','王小明'],
+    ['A-003','華司墊片 4mm',300,'個','五金','陳大華'],
+    ['B-101','束線帶 200mm',120,'包','耗材','陳大華'],
+    ['B-102','電工膠帶 黑',60,'捲','耗材','林佳穎'],
+    ['C-050','A4 影印紙',40,'包','文具','林佳穎'],
   ];
   try{
     const batch=db.batch();
     let n=0;
     s.forEach(r=>{
       if(findItem(r[0]))return;
-      batch.set(itemsCol.doc(docId(r[0])),{code:r[0],name:r[1],expected:r[2],unit:r[3],loc:r[4],cat:r[5]});
+      batch.set(itemsCol.doc(docId(r[0])),{code:r[0],name:r[1],expected:r[2],unit:r[3],cat:r[4],custodian:r[5]});
       n++;
     });
     await batch.commit();
@@ -787,6 +955,7 @@ function jsq(s){return (''+s).replace(/\\/g,'\\\\').replace(/'/g,"\\'");}
 
 /* ---------- 啟動 ---------- */
 updateNetStatus();
+restoreOperator();
 setTimeout(()=>document.getElementById('scanInput').focus(),200);
 setTimeout(()=>document.getElementById('authPin')?.focus(),300);
 </script>

@@ -6,6 +6,8 @@
 <title>QR 盤點系統</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html5-qrcode/2.3.8/html5-qrcode.min.js"></script>
+<!-- docx（用來在瀏覽器端產生「全部財產標籤.docx」Word 檔） -->
+<script src="https://cdn.jsdelivr.net/npm/docx@7.8.2/build/index.js"></script>
 <!-- Firebase（雲端資料庫，讓所有裝置共用同一份盤點資料） -->
 <script src="https://www.gstatic.com/firebasejs/12.19.0/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/12.19.0/firebase-auth-compat.js"></script>
@@ -300,6 +302,7 @@
           </select>
         </label>
         <button class="btn primary" style="align-self:flex-end" onclick="window.print()">🖨️ 列印全部標籤</button>
+        <button class="btn" style="align-self:flex-end" id="exportDocxBtn" onclick="exportLabelsDocx()">⬇️ 匯出全部標籤 (Word)</button>
       </div>
     </div>
     <div class="card">
@@ -381,6 +384,15 @@ const FIREBASE_CONFIG = {
 // 共用登入帳號的識別信箱，不需要是真的信箱，只要跟 Firebase Auth 裡建立的使用者一致即可
 const SHARED_LOGIN_EMAIL = "inventory-test@daikso.com"; // 一般使用者帳號(既有)
 const ADMIN_LOGIN_EMAIL = "admin-test@daikso.com";      // 管理員帳號(新增,需到 Firebase 手動建立,見交付說明)
+
+// 匯出 Word 標籤時，印在每張標籤最上面的公司名稱——依「財產編號」開頭數字決定用哪家公司，
+// 會直接印在實體財產標籤上，如有新的編號開頭或公司名稱有誤，請在這裡增修對照
+const LABEL_COMPANY_BY_PREFIX = { '1': '戴承智慧股份有限公司', '2': '戴克智慧股份有限公司' };
+const LABEL_COMPANY_DEFAULT = '戴克智慧股份有限公司'; // 財產編號開頭不是 1 或 2 時，預設用這個
+function labelCompanyName(code){
+  const prefix = String(code||'').charAt(0);
+  return LABEL_COMPANY_BY_PREFIX[prefix] || LABEL_COMPANY_DEFAULT;
+}
 
 firebase.initializeApp(FIREBASE_CONFIG);
 const auth = firebase.auth();
@@ -806,6 +818,10 @@ function download(name,content){
   const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=name; a.click();
   setTimeout(()=>URL.revokeObjectURL(a.href),1000);
 }
+function downloadBlob(name,blob){
+  const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=name; a.click();
+  setTimeout(()=>URL.revokeObjectURL(a.href),4000);
+}
 function exportItemsCSV(){
   const head='財產編號,品名,帳面數量,單位,財產類別,帳面保管人';
   const body=items.map(i=>[i.code,i.name,i.expected,i.unit,i.cat,i.custodian].map(csvCell).join(',')).join('\n');
@@ -844,6 +860,102 @@ function renderLabels(){
     d.appendChild(cap); area.appendChild(d);
     new QRCode(box,{text:i.code,width:size,height:size,correctLevel:QRCode.CorrectLevel.M});
   });
+}
+
+/* ---------- 匯出全部標籤 (Word/docx) ---------- */
+// 把 base64 的 dataURL 轉成 docx 圖片需要的 Uint8Array
+function dataUrlToBytes(dataUrl){
+  const base64=dataUrl.split(',')[1];
+  const bin=atob(base64);
+  const arr=new Uint8Array(bin.length);
+  for(let i=0;i<bin.length;i++) arr[i]=bin.charCodeAt(i);
+  return arr;
+}
+// 用現有的 QRCode.js 在畫面外產生一張 QR PNG，回傳圖片的二進位資料
+function makeQrPngBytes(code,px){
+  const tmp=document.createElement('div');
+  tmp.style.position='fixed'; tmp.style.left='-9999px'; tmp.style.top='-9999px';
+  document.body.appendChild(tmp);
+  try{
+    new QRCode(tmp,{text:String(code||''),width:px,height:px,correctLevel:QRCode.CorrectLevel.M});
+    const canvas=tmp.querySelector('canvas');
+    const img=tmp.querySelector('img');
+    const dataUrl=canvas?canvas.toDataURL('image/png'):(img?img.src:null);
+    return dataUrl?dataUrlToBytes(dataUrl):null;
+  } finally {
+    document.body.removeChild(tmp);
+  }
+}
+// 依「財產標籤_範本.docx」的版面(10cm×14.8cm、每頁4張標籤)重新產生，匯出全部品項的標籤
+async function exportLabelsDocx(){
+  if(!items.length){ toast('尚無品項可匯出標籤'); return; }
+  if(typeof docx==='undefined'){ toast('Word 匯出元件未載入(需連網後再試一次)'); return; }
+  const btn=document.getElementById('exportDocxBtn');
+  const oldText=btn?btn.textContent:'';
+  if(btn){ btn.disabled=true; btn.textContent='產生中…'; }
+  try{
+    const { Document, Packer, Table, TableRow, TableCell, Paragraph, TextRun, ImageRun, PageBreak } = docx;
+    const FONT='標楷體';
+    const COLW=[1048,1623,1719];      // 直接取自範本的欄寬 (單位:twips/dxa)
+    const ROWH=[480,463,771];         // 直接取自範本的列高 (單位:twips/dxa, 精確高度)
+    const border={style:'single',size:4,color:'000000'};
+    const borders={top:border,bottom:border,left:border,right:border,insideHorizontal:border,insideVertical:border};
+
+    function labelRows(item){
+      const qr=makeQrPngBytes(item.code,200);
+      return [
+        new TableRow({height:{value:ROWH[0],rule:'exact'},children:[
+          new TableCell({columnSpan:2,width:{size:COLW[0]+COLW[1],type:'dxa'},verticalAlign:'center',
+            children:[new Paragraph({alignment:'center',children:[new TextRun({text:labelCompanyName(item.code),bold:true,font:FONT,size:24})]})]}),
+          new TableCell({width:{size:COLW[2],type:'dxa'},verticalMerge:'restart',verticalAlign:'center',
+            children:[new Paragraph({alignment:'center',children: qr
+              ? [new ImageRun({data:qr,transformation:{width:90,height:90}})]
+              : [new TextRun({text:'(QRCODE)',font:FONT,size:24})]})]})
+        ]}),
+        new TableRow({height:{value:ROWH[1],rule:'exact'},children:[
+          new TableCell({width:{size:COLW[0],type:'dxa'},verticalAlign:'center',
+            children:[new Paragraph({alignment:'center',children:[new TextRun({text:'財產編號',bold:true,font:FONT,size:20})]})]}),
+          new TableCell({width:{size:COLW[1],type:'dxa'},verticalAlign:'center',
+            children:[new Paragraph({alignment:'center',children:[new TextRun({text:String(item.code||''),font:FONT,size:20})]})]}),
+          new TableCell({width:{size:COLW[2],type:'dxa'},verticalMerge:'continue',children:[new Paragraph({})]})
+        ]}),
+        new TableRow({height:{value:ROWH[2],rule:'exact'},children:[
+          new TableCell({width:{size:COLW[0],type:'dxa'},verticalAlign:'center',
+            children:[new Paragraph({alignment:'center',children:[new TextRun({text:'財產名稱',bold:true,font:FONT,size:20})]})]}),
+          new TableCell({width:{size:COLW[1],type:'dxa'},verticalAlign:'center',
+            children:[new Paragraph({alignment:'center',children:[new TextRun({text:String(item.name||''),font:FONT,size:14})]})]}),
+          new TableCell({width:{size:COLW[2],type:'dxa'},verticalMerge:'continue',children:[new Paragraph({})]})
+        ]})
+      ];
+    }
+
+    const children=[];
+    const PER_PAGE=4; // 範本一頁(10cm×14.8cm)排4張標籤
+    for(let start=0; start<items.length; start+=PER_PAGE){
+      const chunk=items.slice(start,start+PER_PAGE);
+      let rows=[];
+      chunk.forEach(it=>{ rows=rows.concat(labelRows(it)); });
+      children.push(new Table({rows,width:{size:4390,type:'dxa'},layout:'fixed',borders}));
+      if(start+PER_PAGE<items.length){ children.push(new Paragraph({children:[new PageBreak()]})); }
+    }
+
+    const doc=new Document({sections:[{
+      properties:{page:{
+        size:{width:5669,height:8391}, // 10cm × 14.8cm，與範本相同
+        margin:{top:227,right:227,bottom:227,left:227,header:708,footer:708,gutter:0}
+      }},
+      children
+    }]});
+
+    const blob=await Packer.toBlob(doc);
+    downloadBlob('財產標籤.docx',blob);
+    toast('已匯出 '+items.length+' 筆標籤');
+  } catch(err){
+    console.error(err);
+    toast('匯出失敗:'+err.message);
+  } finally {
+    if(btn){ btn.disabled=false; btn.textContent=oldText||'⬇️ 匯出全部標籤 (Word)'; }
+  }
 }
 
 /* ---------- 報表 ---------- */
